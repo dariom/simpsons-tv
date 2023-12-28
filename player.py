@@ -1,8 +1,10 @@
 ######################################################################################
 # player.py
-# Version:   1.0
-# Author:    D.J. Hatfield
-# Date:      2/21/2022
+# Version:   1.1
+# Author:    D. Mratovich
+# Original author:
+#            D.J. Hatfield
+# Date:      12/28/2023
 # Device:    Raspberry Pi Zero 2 W
 # Purpose:   At startup, this script will start playing videos in the first subdirectory
 #            under the "~/simpsonstv/videos/" specified by the "Directories" string array.
@@ -22,18 +24,18 @@
 #                -Press and hold the button for > 1 second to rewind current video by 10 seconds
 #                 (continue holding to keep rewinding additional 10 seconds every second the button
 #                  is pressed)
-#             Press and hold BOTH the Right and Left buttons for > 5 seconds to shutdown the
-#             OMXPlayer and exit this Python script and return to a command prompt.  NOTE: once
+#             Press and hold BOTH the Right and Left buttons for > 5 seconds to stop the
+#             VLC player and exit this Python script and return to a command prompt.  NOTE: once
 #             this Python script is terminated, the safe shutdown functionality will not work.
 #             You will need to either restart this Python script to re-enable this functionality
 #             or issue a "sudo shutdown now" command from a command prompt to safely shutdown the
 #             Pi.
 #
 #             Additionally, this script monitors the Shutdown input (GPIO 11).  If this pin
-#             is asserted (active LOW) for > 50mS, the Pi will be Shut down.
+#             is asserted (active LOW) for > 50ms, the Pi will be Shut down.
 ###########################################################################################
 
-from omxplayer.player import OMXPlayer
+import vlc
 from pathlib import Path
 import os
 import RPi.GPIO as GPIO
@@ -86,7 +88,7 @@ def nextVideo():
     global manualSelect
     global player
     manualSelect = True  #Set the flag to indicate the next video was manually selected
-    player.quit()        #Stop the currently playing video - this kills the current OMXPlayer instance
+    player.stop()        #Stop the currently playing video
     Video_Pointer += 1   # Increment Video_Pointer
     if(Video_Pointer > (len(videos)-1)):
       Video_Pointer = 0  #Loop Video_Pointer back around once end of videos is reached
@@ -103,7 +105,7 @@ def getVideos():
     global Root_Path
     videos = []  #Clear out the videos string array
     for file in os.listdir(Root_Path + Current_Directory):  #Cycle through all files in the current directory and
-        if file.lower().endswith('.mp4'):                   #add to videos string array if it is an mp4 video file
+        if file.lower().endswith('.mkv'):                   #add to videos string array if it is an mkv video file
             videos.append(file)
     videos.sort() #Rearrange the videos in the videos array in alpha-numerical order
 
@@ -119,9 +121,11 @@ def switchDirectory():
     global Current_Directory
     global Directories
     global manualSelect
+    global instance
+    global media
     global player
     manualSelect=True   #Set the flag to indicate the next video was manually selected
-    player.quit()       #Stop the currently playing video - this kills the current OMXPlayer instance
+    player.stop()       #Stop the currently playing video
     Video_Pointer = 0   #Set video pointer to the first video in the newly specified channel
     Directory_Pointer +=1 #Increment the Channel Pointer
     if(Directory_Pointer > (len(Directories)-1)):
@@ -130,9 +134,10 @@ def switchDirectory():
     getVideos()         #Identify all videos in the newly specified channel (directory)
     displayDirectoryVideo()  #Display Channel and Selected Video on the LCD screen
 #-----------------------------------------------------------------------------------------------------------------
-# autoPlayNext(): Executed when an instance of OMXPlayer exits.  It automatically starts playing the next video in
-#                 the current channel if the last video played to completion.  It will not try to play a video if
-#                 OMXPlayer was shutdown by the user manually (i.e. selecting through videos for the next video).
+# autoPlayNext(): A callback executed when the VLC media player reaches the end of a video. It automatically
+#                 starts playing the next video in the current channel if the last video played to completion.  It
+#                 will not try to play a video if VLC was shutdown by the user manually (i.e. selecting through
+#                 videos for the next video).
 #                 In the case of a manual video selection, the video will be played in the main loop.
 #                 Returns nothing
 def autoPlayNext(code):
@@ -164,9 +169,13 @@ Current_Directory = Directories[0] #Point current Channel to first directory in 
 getVideos()                    #populate videos string array with all video files located in the current channel
 Current_Video = videos[0]      #Point current video to first video in the videos string array
 VIDEO_PATH = Path(Root_Path + Current_Directory + "/" + Current_Video) #Set video path
-player = OMXPlayer(VIDEO_PATH) #Start playing video specified by the video path
-player.exitEvent += lambda _, exit_code: autoPlayNext(exit_code) #Set OMXPlayer exit event handler to call the
-                                                                 # autoPlayNext() routine when OMXPlayer exits
+instance = vlc.Instance()     #Create a new VLC instance
+media = instance.media_new_path(VIDEO_PATH)  #Start playing video specified by the video path
+player = instance.media_player_new()
+player.set_media(media)
+event_manager = player.event_manager()
+event_manager.event_attach(vlc.EventType.MediaPlayerEndReached, autoPlayNext)
+player.play()
 Button1Timer = millis()        #Used to debounce VCR right button for select next video indication
 Button2Timer = millis()        #Used to debounce VCR left button for select pause/play indication
 ShutDownTimer = millis()       #Used to debounce Shutdown signal from the safe shutdown circuit
@@ -230,7 +239,7 @@ while (True):
        if(seekToggle == True):
          try:                        #Implement exception handler (try: and except:) - prevents python script from
                                      # crashing if exception occurs during (try:) code
-           player.seek(-10)          #Rewind video 10 seconds - causes exception if OMXPlayer has been terminated
+           player.set_time(player.get_time() - 10000) #Rewind video 10 seconds
            seekToggle = False
            seekTimer = millis()
            oneShotPlayPause = False
@@ -248,7 +257,7 @@ while (True):
       if((temp - Button2Timer) >= 50):
         try:                         #Implement exception handler (try: and except:) - prevents python script from
                                      # crashing if exception occurs during (try:) code
-          player.play_pause()        #Toggle video play/pause - causes exception if OMXPlayer has been terminated
+          player.pause()             #Toggle video play/pause
           oneShotPlayPause = False
         except Exception as e:       #Exception handler - executes if exception occurs during above try:
           Nothing = 0                #  Exception code:does nothing-just catches exception/prevents Python crash
@@ -258,7 +267,7 @@ while (True):
    if ((input1 == False) and (input2 == False)):
      temp = millis()
      if ((temp - ExitPythonTimer) >= 5000):
-       player.quit()                 #Shut down OMXPlayer
+       player.stop()                 #Stop down VLC player
        print("Exiting Python script")
        quit()                        #Exit player.py Python script
    else:
@@ -286,8 +295,8 @@ while (True):
    #  triggers playing the new video 1.5 seconds later
    temp = millis()
    if((temp - PlayTimer) >= 1500 and (playNew == True)):
-     player=OMXPlayer(VIDEO_PATH)   #Start playing video specified by the video path
-     player.exitEvent = lambda _, exit_code: autoPlayNext(exit_code) #Set OMXPlayer exit event handler to call the
-                                                                     # autoPlayNext() routine when OMXPlayer exits
+     media = instance.media_new_path(VIDEO_PATH)
+     player.set_media(media)
+     player.play()
      playNew = False                #Reset the playNew flag
      manualSelect = False           #Reset the manualSelect flag (indicates automatic play unless changed by user)
